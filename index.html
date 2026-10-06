@@ -213,6 +213,24 @@
   .fb b{font-size:14px; color:#cfdad6; font-weight:600}
   .card.failed .fb{display:flex}
   .card.failed .play{display:none}
+  .card.failed .repick{display:none}
+  /* 换帧按钮：点一下换一个时间点当缩略图，选择会记住 */
+  .repick{
+    position:absolute; top:12px; left:12px; z-index:5;
+    display:inline-flex; align-items:center; gap:5px;
+    font:inherit; font-size:11.5px; letter-spacing:.04em;
+    color:#dbe6e3; cursor:pointer;
+    background:rgba(6,9,9,.74);
+    border:1px solid rgba(255,255,255,.15);
+    padding:3px 9px; border-radius:7px;
+    backdrop-filter:blur(4px); -webkit-backdrop-filter:blur(4px);
+    opacity:0; transform:translateY(-4px);
+    transition:.22s;
+  }
+  .card:hover .repick{opacity:1; transform:none}
+  .repick:hover{background:rgba(95,224,164,.9); color:#06231a; border-color:transparent}
+  .repick span{font-variant-numeric:tabular-nums}
+  @media (hover:none){ .repick{opacity:1; transform:none} }
 
   /* ---------- 灯箱 ---------- */
   .lb{
@@ -322,8 +340,9 @@
 </main>
 
 <footer>
-  素材目录：<code>Desktop\demo</code> · 本页为单文件静态页面，新增素材只需在 <code>ITEMS</code> 数组中追加一条记录；
-  视频缩略图想固定到某一秒，加 <code>thumbAt: 5</code>；想用现成截图则加 <code>poster:"shot.jpg"</code>。
+  素材目录：<code>Desktop\demo</code> · 本页为单文件静态页面，新增素材只需在 <code>ITEMS</code> 数组中追加一条记录；<br>
+  视频缩略图不满意？鼠标移到视频卡片上点左上角 <b>⟳ 换帧</b> 循环挑选，选择会自动记住；
+  也可在 <code>ITEMS</code> 里写死 <code>thumbAt: 5</code>（秒数）或 <code>poster:"shot.jpg"</code>（现成截图）。
 </footer>
 
 <div class="lb" id="lb">
@@ -397,6 +416,7 @@ function render(filter){
         ${media}
         ${vid ? `<div class="play"><span></span></div>
                  <div class="fb"><b>无法预览</b><span>当前浏览器不支持该视频编码</span></div>
+                 <button class="repick" type="button" title="换一帧作为缩略图">⟳ <span>换帧</span></button>
                  <div class="dur" hidden></div>` : ""}
       </div>
       <div class="meta">
@@ -417,22 +437,52 @@ function fmtDur(s){
   return `${m}:${String(r).padStart(2, "0")}`;
 }
 
-/* 取帧时间：默认落在时长的 12% 处，避开片头黑场与标题卡；
-   对某条素材不满意时，可在 ITEMS 里用 thumbAt: 5 指定秒数。 */
-function pickTime(it, v){
+/* 缩略图取帧时间：优先用你在页面里"换帧"选定的秒数，
+   其次是 ITEMS 里的 thumbAt，最后默认落在时长的 25% 处（避开片头黑场/标题卡）。 */
+function pickTime(it, v, saved){
   const d = (isFinite(v.duration) && v.duration > 0) ? v.duration : 0;
-  if(typeof it.thumbAt === "number"){
-    return d ? Math.min(it.thumbAt, Math.max(0, d - 0.1)) : it.thumbAt;
-  }
+  const raw = (typeof saved === "number") ? saved
+            : (it && typeof it.thumbAt === "number") ? it.thumbAt
+            : null;
+  if(raw !== null) return d ? Math.min(Math.max(raw, 0), Math.max(0, d - 0.15)) : raw;
   if(!d) return 1;
-  return Math.min(Math.max(d * 0.12, 0.8), Math.max(0, d - 0.3));
+  return Math.min(Math.max(d * 0.25, 1), Math.max(0, d - 0.4));
+}
+
+/* 候选取帧点，供"换帧"按钮循环 */
+function candidates(d){
+  const pct = [0, .02, .05, .1, .15, .25, .35, .5, .65, .8];
+  const out = [];
+  pct.forEach(p => {
+    const t = Math.min(Math.max(d * p, 0), Math.max(0, d - 0.15));
+    if(!out.length || Math.abs(t - out[out.length - 1]) > 0.05) out.push(t);
+  });
+  return out;
+}
+
+/* 记住用户选定的缩略图时间（file:// 下 localStorage 可能被禁用，故全程 try/catch） */
+const THUMB_KEY = "dsh:thumb-times";
+function loadPrefs(){
+  try{ return JSON.parse(localStorage.getItem(THUMB_KEY) || "{}") || {}; }catch(e){ return {}; }
+}
+function savePref(src, t){
+  try{
+    const p = loadPrefs();
+    p[src] = t;
+    localStorage.setItem(THUMB_KEY, JSON.stringify(p));
+  }catch(e){ /* 无痕模式或 file:// 限制，忽略 */ }
 }
 
 function hydrateVideos(){
+  const prefs = loadPrefs();
+
   grid.querySelectorAll("video").forEach(v => {
     const card  = v.closest(".card");
     const badge = card && card.querySelector(".dur");
+    const repick= card && card.querySelector(".repick");
+    const label = repick && repick.querySelector("span");
     const it    = card ? view[+card.dataset.i] : null;
+    const saved = (it && typeof prefs[it.src] === "number") ? prefs[it.src] : undefined;
 
     let settled = false;
     const settle = () => {
@@ -456,7 +506,7 @@ function hydrateVideos(){
       if(settled) return;
       if(!marks){
         const d = (isFinite(v.duration) && v.duration > 0) ? v.duration : 0;
-        marks = [pickTime(it || {}, v)];
+        marks = [pickTime(it || {}, v, saved)];
         if(d > 3) marks.push(Math.min(d * 0.35, d - 0.3));
         if(d > 8) marks.push(Math.min(d * 0.65, d - 0.3));
       }
@@ -473,6 +523,7 @@ function hydrateVideos(){
       if(v.videoWidth && v.videoHeight && v.videoWidth / v.videoHeight < 1.1){
         v.classList.add("fit");
       }
+      if(label) label.textContent = (typeof saved === "number" ? fmtSec(saved) : "换帧");
       nextMark();
     });
 
@@ -495,12 +546,34 @@ function hydrateVideos(){
       if(card) card.classList.add("failed");
     });
 
+    /* 换帧：循环候选时间点，改完立即记住 */
+    if(repick){
+      repick.addEventListener("click", ev => {
+        ev.stopPropagation();
+        const d = (isFinite(v.duration) && v.duration > 0) ? v.duration : 0;
+        if(!d) return;
+        const list = candidates(d);
+        const cur  = v.currentTime;
+        let idx = list.findIndex(t => Math.abs(t - cur) < 0.12);
+        idx = (idx + 1) % list.length;
+        const t = list[idx];
+        try{ v.currentTime = t; }catch(e){}
+        v.classList.add("ready");        // 用户已确认存在画面
+        if(label) label.textContent = fmtSec(t);
+        if(it) savePref(it.src, t);
+      });
+    }
+
     /* 事件已经发生过（缓存命中）时立即补一次 */
     if(v.readyState >= 1){
       setDur();
       if(v.readyState >= 2) settle(); else nextMark();
     }
   });
+}
+
+function fmtSec(t){
+  return (Math.round(t * 10) / 10).toFixed(1) + "s";
 }
 
 /* ---------- 入场动画 ---------- */
